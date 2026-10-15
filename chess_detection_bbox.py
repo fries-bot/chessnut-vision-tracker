@@ -269,6 +269,19 @@ class PatternChessboardCornerDetector:
     """
 
     def detect_board_corners(self, frame, yolo_bbox=None, min_n=4):
+        offset_x, offset_y = 0, 0
+        if yolo_bbox is not None:
+            x1, y1, x2, y2 = map(float, yolo_bbox)
+            margin_x = (x2 - x1) * 0.00
+            margin_y = (y2 - y1) * 0.00
+
+            x1 = max(0, int(x1 + margin_x))
+            y1 = max(0, int(y1 + margin_y))
+            x2 = min(frame.shape[1], int(x2 - margin_x))
+            y2 = min(frame.shape[0], int(y2 - margin_y))
+
+            offset_x, offset_y = x1, y1
+            frame = frame[y1:y2, x1:x2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         H, W = gray.shape
 
@@ -278,6 +291,12 @@ class PatternChessboardCornerDetector:
                 gray, (n, n),
                 cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_NORMALIZE_IMAGE
             )
+            print(
+                f"[TESTE PATTERN] grade={n}x{n}, "
+                f"ret={ret}, "
+                f"cantos={0 if corners is None else len(corners)}"
+            )
+
             if not ret:
                 continue
 
@@ -300,7 +319,10 @@ class PatternChessboardCornerDetector:
                    cy < -margin_y or cy > H + margin_y
                    for cx, cy in outer):
                 continue
-
+            #if any(cx < 0 or cx >= W or cy < 0 or cy >= H for cx, cy in outer):
+            #    continue
+            outer[:, 0] += offset_x
+            outer[:, 1] += offset_y
             print(f"  PatternDetector (n={n}): "
                   f"TL={TL.astype(int)} TR={TR.astype(int)} "
                   f"BL={BL.astype(int)} BR={BR.astype(int)}")
@@ -341,7 +363,7 @@ class LSDChessboardCornerDetector:
         """
         if yolo_bbox is not None:
             x1, y1, x2, y2 = [int(v) for v in yolo_bbox]
-            pad = int(min(x2 - x1, y2 - y1) * 0.03)
+            pad = int(min(x2 - x1, y2 - y1) * 0.01)
             x1 = max(0, x1 - pad)
             y1 = max(0, y1 - pad)
             x2 = min(frame.shape[1], x2 + pad)
@@ -3814,7 +3836,7 @@ class ChessTracker:
         for _probe in _all_frames[:300]:
             # Require full 7×7 grid for initial calibration — ensures corners
             # cover the whole board, not just a partial visible region
-            _c = self.pattern_detector.detect_board_corners(_probe, min_n=7)
+            _c = self.pattern_detector.detect_board_corners(_probe, yolo_bbox=yolo_bbox, min_n=7)
             if _c is not None:
                 corners = _c
                 break
@@ -3864,7 +3886,7 @@ class ChessTracker:
             cv2.waitKey(0)
             cv2.destroyAllWindows()
         else:
-            output_path = '/teamspace/studios/this_studio/board_detection.jpg'
+            output_path = 'output/board_detection.jpg'
             cv2.imwrite(output_path, vis_frame)
             print(f"Board detection visualization saved to: {output_path}")
 
@@ -4639,7 +4661,7 @@ def _gap_moves_in_window(ws, we, corrected_moves, already_pushed_upto):
 
 def main():
     # ── Input video ────────────────────────────────────────────────────────────
-    video_path  = '/teamspace/studios/this_studio/chessnut_evo.mp4'
+    video_path  = "video.mp4"
     START_FRAME = 115   # first frame where pieces start moving (~3.8 s in)
 
     if not os.path.exists(video_path):
@@ -4647,10 +4669,10 @@ def main():
         return
 
     # ── Output paths ───────────────────────────────────────────────────────────
-    output_dir        = '/teamspace/studios/this_studio/chessnut_annotated_frames/'
-    output_video_path = '/teamspace/studios/this_studio/chessnut_annotated.avi'
-    pgn_path          = '/teamspace/studios/this_studio/chessnut_game.pgn'
-    move_log_path     = '/teamspace/studios/this_studio/chessnut_moves.log'
+    output_dir        = 'output/dir/'
+    output_video_path = 'output/chessnut_annotated.avi'
+    pgn_path          = 'output/chessnut_game.pgn'
+    move_log_path     = 'output/chessnut_moves.log'
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Recording discontinuity handling ──────────────────────────────────────
@@ -4698,9 +4720,9 @@ def main():
         return
 
     # ── Models ─────────────────────────────────────────────────────────────────
-    piece_model_path      = '/teamspace/studios/this_studio/runs/detect/finetune_v1/weights/best.pt'
-    chessboard_model_path = '/teamspace/studios/this_studio/models/best.pt'
-    seg_model_path         = '/teamspace/studios/this_studio/runs/segment/chessnut_evo_ft_v1/weights/best.pt'
+    piece_model_path      = 'models/chessboard_det.pt'
+    chessboard_model_path = 'models/best.pt'
+    seg_model_path         = 'runs/segment/chessnut_evo_ft_v1/weights/best.pt'
 
     tracker = ChessTracker(
         model_path=piece_model_path,
@@ -4710,7 +4732,7 @@ def main():
     tracker.game_engine._fps = fps
 
     # ── Board orientation: white pieces appear at TOP of frame in this video ──
-    tracker.square_mapper.white_at_bottom = False
+    tracker.square_mapper.white_at_bottom = True
 
     # ── Corner detection: both the inner-corner pattern detector and the LSD
     # detector fail outright on this board (tested across multiple clean,
@@ -4738,16 +4760,16 @@ def main():
     # these corners vs 10/16 with the old ones). ────────────────────────────
     tracker.prepare_tracking(first_frame, headless=True)
 
-    _locked_corners = np.array([
-        [258.882, 118.393],   # TL — outer corner beyond h1
-        [860.299, 114.709],   # TR — outer corner beyond a1
-        [227.959, 703.390],   # BL — outer corner beyond h8
-        [912.263, 692.027],   # BR — outer corner beyond a8
-    ], dtype=np.float32)
-    tracker.perspective_transformer.set_board_corners(_locked_corners)
-    tracker.perspective_transformer.estimate_board_perspective()
-    tracker._last_good_corners = _locked_corners.copy()
-    print(f"Locked board corners for chessnut_evo.mp4 (perspective-fit, not axis-aligned): {_locked_corners.tolist()}")
+    #_locked_corners = np.array([
+    #    [277.04, 466.73],
+    #    [894.45, 76.731],
+    #    [264.22, 596.58],
+    #    [960.04, 595.41],
+    #], dtype=np.float32)
+    #tracker.perspective_transformer.set_board_corners(_locked_corners)
+    #tracker.perspective_transformer.estimate_board_perspective()
+    #tracker._last_good_corners = _locked_corners.copy()
+    #print(f"Locked board corners for chessnut_evo.mp4 (perspective-fit, not axis-aligned): {_locked_corners.tolist()}")
 
     # ── Board guard (axis-aligned box clipped from the locked corners) ───────
     _board_guard = None
